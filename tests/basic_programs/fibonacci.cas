@@ -1,0 +1,9 @@
+// fibonacci.cas — Print first 10 Fibonacci numbers
+0->A
+1->B
+For I=1 To 10
+Print A
+A+B->C
+B->A
+C->B
+Next I

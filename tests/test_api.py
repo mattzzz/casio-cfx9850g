@@ -130,3 +130,68 @@ def test_websocket_connects():
     with TestClient(app) as client:
         with client.websocket_connect("/ws/calculator") as ws:
             assert ws is not None
+
+
+# ── Phase 6: PRGM API endpoints ──────────────────────────────────────────────
+
+@pytest.mark.anyio
+async def test_prgm_list(client):
+    resp = await client.get("/api/prgm/list")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "programs" in data
+    assert isinstance(data["programs"], list)
+
+
+@pytest.mark.anyio
+async def test_prgm_run_simple(client):
+    resp = await client.post("/api/prgm/run", json={
+        "source": "3+4->A\nPrint A",
+        "inputs": [],
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["error"] is None
+    texts = [e["text"] for e in data["events"] if e["type"] == "text"]
+    assert "7" in texts
+
+
+@pytest.mark.anyio
+async def test_prgm_run_with_inputs(client):
+    resp = await client.post("/api/prgm/run", json={
+        "source": 'Input "A=",A\nInput "B=",B\nA*B->C\nPrint C',
+        "inputs": [3, 4],
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["error"] is None
+    texts = [e["text"] for e in data["events"] if e["type"] == "text"]
+    assert "12" in texts
+
+
+@pytest.mark.anyio
+async def test_prgm_run_by_name(client):
+    # fibonacci is bundled in app/programs/
+    resp = await client.post("/api/prgm/run", json={"name": "fibonacci"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["error"] is None
+    texts = [e["text"] for e in data["events"] if e["type"] == "text"]
+    assert texts[0] == "0"
+    assert texts[1] == "1"
+
+
+@pytest.mark.anyio
+async def test_prgm_save_and_get(client):
+    src = "5->A\nPrint A"
+    save_resp = await client.post("/api/prgm/save", json={"name": "TESTPROG", "source": src})
+    assert save_resp.status_code == 200
+    assert save_resp.json()["status"] == "ok"
+
+    get_resp = await client.get("/api/prgm/TESTPROG")
+    assert get_resp.status_code == 200
+    assert get_resp.json()["source"] == src
+
+    # Clean up
+    del_resp = await client.delete("/api/prgm/TESTPROG")
+    assert del_resp.status_code == 200

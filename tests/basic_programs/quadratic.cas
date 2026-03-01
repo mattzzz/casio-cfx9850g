@@ -1,0 +1,18 @@
+// quadratic.cas — Solve ax^2 + bx + c = 0
+// Inputs: a, b, c
+// Outputs: roots (or error message)
+Input "A=",A
+Input "B=",B
+Input "C=",C
+B*B-4*A*C->D
+If D<0
+Then
+"No real roots"
+IfEnd
+If D>=0
+Then
+(-B+sqrt(D))/(2*A)->X
+Print X
+(-B-sqrt(D))/(2*A)->X
+Print X
+IfEnd

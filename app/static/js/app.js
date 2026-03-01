@@ -20,6 +20,17 @@
   let menuVisible = false;
   let angleMode   = 'DEG';
 
+  // ── PRGM sub-state ───────────────────────────────────────────────────────
+  let prgmPhase      = 'LIST';    // 'LIST' | 'VIEW' | 'RUN' | 'EDIT'
+  let prgmList       = [];        // names from /api/prgm/list
+  let prgmListIdx    = 0;         // cursor in list
+  let prgmName       = '';        // currently selected program name
+  let prgmSource     = '';        // source of current program
+  let prgmTextLines  = [];        // accumulated text-output lines
+  let prgmLocateBuf  = {};        // {y: {x: text}} for Locate rendering
+  let prgmPaused     = false;
+  let prgmEditBuf    = '';        // new-program source buffer
+
   // ── GRAPH sub-state ──────────────────────────────────────────────────────
   let graphSub       = 'IDLE';
   let graphYBuffer   = '';
@@ -159,8 +170,13 @@
       baseBase = 'DEC'; baseInput = ''; baseResult = null;
       showBase();
 
+    } else if (mode === 'PRGM') {
+      prgmPhase = 'LIST'; prgmTextLines = []; prgmLocateBuf = {};
+      prgmPaused = false; prgmName = ''; prgmSource = '';
+      loadPrgmList();
+
     } else {
-      // DYNA, RECR, PRGM — not yet implemented
+      // DYNA, RECR — not yet implemented
       LCD.render({
         type: 'display', mode, angle: angleMode, shift: false, alpha: false,
         expression: mode + ' MODE', result: 'Coming soon', error: '',
@@ -619,6 +635,7 @@
       case 'EQUA':  handleEquaKey(key);     break;
       case 'MAT':   handleMatKey(key);      break;
       case 'BASE':  handleBaseKey(key);     break;
+      case 'PRGM':  handlePrgmKey(key);     break;
       default:
         if (key === 'EXIT') showMenu();
     }
@@ -705,6 +722,278 @@
       if (key === 'UP')   { tableScroll = Math.max(0, tableScroll - 1); Graph.renderTable(tableData, tableScroll, 'TABLE', angleMode); return; }
       if (key === 'DOWN') { tableScroll = Math.min(maxScroll, tableScroll + 1); Graph.renderTable(tableData, tableScroll, 'TABLE', angleMode); return; }
     }
+  }
+
+  // ── PRGM mode ─────────────────────────────────────────────────────────────
+
+  /** Fetch program list from server and show it. */
+  async function loadPrgmList() {
+    try {
+      const resp = await fetch('/api/prgm/list');
+      const data = await resp.json();
+      prgmList = data.programs || [];
+    } catch { prgmList = []; }
+    prgmListIdx = 0;
+    showPrgmList();
+  }
+
+  /** Render the program list on the LCD. */
+  function showPrgmList() {
+    prgmPhase = 'LIST';
+    const total = prgmList.length;
+    const vis   = prgmList.slice(prgmListIdx, prgmListIdx + 4);
+    let expr    = pad21('PRGM  [' + (prgmListIdx + 1) + '/' + (total || 0) + ']');
+    if (total === 0) {
+      expr += pad21('  (no programs)') + pad21('F3=NEW  F4=LOAD') + pad21('EXE to run');
+    } else {
+      for (let i = 0; i < 4; i++) {
+        const name = vis[i] || '';
+        const cursor = (i === 0) ? '>' : ' ';
+        expr += pad21(cursor + ' ' + name);
+      }
+    }
+    LCD.render({
+      type: 'display', mode: 'PRGM', angle: angleMode,
+      shift: false, alpha: false,
+      expression: expr, result: '', error: '',
+      softkeys: Modes.getSoftkeys('PRGM'),
+    });
+  }
+
+  /** Render program output events on the LCD. */
+  function showPrgmOutput() {
+    // Show last 6 text lines in the LCD
+    const lines = prgmTextLines.slice(-6);
+    while (lines.length < 4) lines.unshift('');
+    const expr = lines.slice(0, 4).map(l => pad21(l)).join('');
+    const res  = prgmPaused ? '[ EXE: continue ]' : (lines[4] ? lines[4] : '');
+    LCD.render({
+      type: 'display', mode: 'PRGM', angle: angleMode,
+      shift: false, alpha: false,
+      expression: expr, result: res, error: '',
+      softkeys: Modes.getSoftkeys('PRGM'),
+    });
+  }
+
+  /** Process a list of events from /api/prgm/run and display result. */
+  function applyPrgmEvents(events) {
+    for (const ev of events) {
+      if (ev.type === 'text') {
+        prgmTextLines.push(ev.text);
+      } else if (ev.type === 'locate') {
+        if (!prgmLocateBuf[ev.y]) prgmLocateBuf[ev.y] = {};
+        prgmLocateBuf[ev.y][ev.x] = ev.text;
+      } else if (ev.type === 'clrtext') {
+        prgmTextLines = [];
+        prgmLocateBuf = {};
+      } else if (ev.type === 'clrgraph') {
+        // Graph cleared — clear pixel map on LCD
+        LCD.renderPixelMap(new Array(128 * 64).fill(0));
+      } else if (ev.type === 'pause') {
+        prgmPaused = true;
+      } else if (ev.type === 'pixels') {
+        LCD.renderPixelMap(ev.pixels);
+      } else if (ev.type === 'input') {
+        prgmTextLines.push('? ' + ev.var + '=');
+        prgmPaused = true;   // treat as pause (no interactive input yet)
+      }
+    }
+  }
+
+  /** Run the current program via the REST API. */
+  async function runCurrentProgram() {
+    prgmPhase     = 'RUN';
+    prgmTextLines = ['Running ' + prgmName + '...'];
+    prgmLocateBuf = {};
+    prgmPaused    = false;
+    showPrgmOutput();
+
+    try {
+      const resp = await fetch('/api/prgm/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: prgmName, angle_mode: angleMode }),
+      });
+      const data = await resp.json();
+      prgmTextLines = [];
+      applyPrgmEvents(data.events || []);
+      if (data.error) prgmTextLines.push('ERR: ' + data.error);
+      if (!data.error && !prgmPaused && prgmTextLines.length === 0)
+        prgmTextLines.push('Done.');
+      showPrgmOutput();
+    } catch {
+      prgmTextLines = ['Network ERROR'];
+      showPrgmOutput();
+    }
+  }
+
+  /** Run source code typed in the EDIT buffer. */
+  async function runEditedSource() {
+    prgmPhase     = 'RUN';
+    prgmTextLines = ['Running...'];
+    prgmPaused    = false;
+    showPrgmOutput();
+
+    try {
+      const resp = await fetch('/api/prgm/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: prgmSource, angle_mode: angleMode }),
+      });
+      const data = await resp.json();
+      prgmTextLines = [];
+      applyPrgmEvents(data.events || []);
+      if (data.error) prgmTextLines.push('ERR: ' + data.error);
+      if (!data.error && !prgmPaused && prgmTextLines.length === 0)
+        prgmTextLines.push('Done.');
+      showPrgmOutput();
+    } catch {
+      prgmTextLines = ['Network ERROR'];
+      showPrgmOutput();
+    }
+  }
+
+  /** Show program source on the LCD (first few lines). */
+  function showPrgmView() {
+    prgmPhase = 'VIEW';
+    const lines = prgmSource.split('\n').filter(l => !l.startsWith('//'));
+    const vis   = lines.slice(0, 4);
+    while (vis.length < 4) vis.push('');
+    const expr  = vis.map(l => pad21(l.slice(0, 21))).join('');
+    LCD.render({
+      type: 'display', mode: 'PRGM', angle: angleMode,
+      shift: false, alpha: false,
+      expression: expr,
+      result: '[' + prgmName + ']  F1=RUN',
+      error: '', softkeys: Modes.getSoftkeys('PRGM'),
+    });
+  }
+
+  /** Show the new-program editor. */
+  function showPrgmEdit() {
+    prgmPhase = 'EDIT';
+    const lines = prgmEditBuf.split('\n');
+    const vis   = lines.slice(-4);
+    while (vis.length < 4) vis.unshift('');
+    const expr  = vis.map(l => pad21(l.slice(0, 20) + '_')).join('');
+    LCD.render({
+      type: 'display', mode: 'PRGM', angle: angleMode,
+      shift: false, alpha: false,
+      expression: expr, result: 'EXE=newline  F1=RUN', error: '',
+      softkeys: Modes.getSoftkeys('PRGM'),
+    });
+  }
+
+  /** Key handler for PRGM mode. */
+  async function handlePrgmKey(key) {
+    if (key === 'EXIT') {
+      if (prgmPhase === 'LIST') { showMenu(); return; }
+      prgmPhase = 'LIST'; showPrgmList(); return;
+    }
+
+    if (prgmPhase === 'LIST') {
+      const total = prgmList.length;
+      if (key === 'UP')   { if (prgmListIdx > 0) prgmListIdx--; showPrgmList(); return; }
+      if (key === 'DOWN') { if (prgmListIdx < total - 1) prgmListIdx++; showPrgmList(); return; }
+      if (key === 'F1' || key === 'EXE') {
+        // Run selected program
+        if (total === 0) return;
+        prgmName = prgmList[prgmListIdx];
+        await runCurrentProgram(); return;
+      }
+      if (key === 'F2') {
+        // View / edit selected program source
+        if (total === 0) return;
+        prgmName = prgmList[prgmListIdx];
+        try {
+          const resp = await fetch('/api/prgm/' + prgmName);
+          const data = await resp.json();
+          prgmSource = data.source || '';
+        } catch { prgmSource = ''; }
+        showPrgmView(); return;
+      }
+      if (key === 'F3') {
+        // New program — open edit buffer
+        prgmName    = 'NEW';
+        prgmEditBuf = '';
+        prgmSource  = '';
+        showPrgmEdit(); return;
+      }
+      if (key === 'F4') {
+        // Load .cas file from disk via hidden file input
+        _triggerFileLoad(); return;
+      }
+      if (key === 'F6') {
+        // Refresh list
+        await loadPrgmList(); return;
+      }
+      return;
+    }
+
+    if (prgmPhase === 'VIEW') {
+      if (key === 'F1' || key === 'EXE') { await runCurrentProgram(); return; }
+      if (key === 'AC') { prgmPhase = 'LIST'; showPrgmList(); return; }
+      return;
+    }
+
+    if (prgmPhase === 'RUN') {
+      if (key === 'EXE' || key === 'AC') {
+        prgmPaused = false;
+        prgmPhase  = 'LIST'; showPrgmList();
+      }
+      return;
+    }
+
+    if (prgmPhase === 'EDIT') {
+      if (key === 'F1') { prgmSource = prgmEditBuf; await runEditedSource(); return; }
+      if (key === 'AC') { prgmEditBuf = ''; showPrgmEdit(); return; }
+      if (key === 'DEL') {
+        prgmEditBuf = prgmEditBuf.slice(0, -1);
+        showPrgmEdit(); return;
+      }
+      if (key === 'EXE') { prgmEditBuf += '\n'; showPrgmEdit(); return; }
+      // Character input (basic COMP key map)
+      const ch = GRAPH_KEY_TEXT[key];
+      if (ch !== undefined) { prgmEditBuf += ch; showPrgmEdit(); }
+      return;
+    }
+  }
+
+  /** Trigger a hidden file-input element to let the user load a .cas file. */
+  function _triggerFileLoad() {
+    let fi = document.getElementById('_cas_file_input');
+    if (!fi) {
+      fi = document.createElement('input');
+      fi.type = 'file';
+      fi.id   = '_cas_file_input';
+      fi.accept = '.cas,.txt';
+      fi.style.display = 'none';
+      document.body.appendChild(fi);
+      fi.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const text = await file.text();
+        const name = file.name.replace(/\.(cas|txt)$/i, '');
+        // Save to server
+        try {
+          await fetch('/api/prgm/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, source: text }),
+          });
+        } catch {}
+        // Reload list
+        prgmName   = name;
+        prgmSource = text;
+        await loadPrgmList();
+        // Select the newly loaded program
+        const idx = prgmList.indexOf(name);
+        if (idx >= 0) prgmListIdx = idx;
+        showPrgmList();
+        fi.value = '';
+      });
+    }
+    fi.click();
   }
 
   // ── Startup ────────────────────────────────────────────────────────────────

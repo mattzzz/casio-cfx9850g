@@ -14,6 +14,7 @@ from app.calculator.modes.matrix import MatrixMode
 from app.calculator.modes.equation import EquationMode
 from app.calculator.modes.base_n import BaseNMode
 from app.calculator.modes.conics import ConicsMode
+from app.calculator.modes.program import CasioBasicInterpreter
 
 app = FastAPI(title="Casio CFX-9850G Emulator", version="1.0.0")
 
@@ -309,6 +310,107 @@ async def conics_plot(body: dict):
         body.get("type", "circle"),
         body.get("params", {}),
     )
+
+
+# ── PRGM endpoints ────────────────────────────────────────────────────────────
+
+_PROGRAMS_DIR = os.path.join(os.path.dirname(__file__), "programs")
+
+
+@app.get("/api/prgm/list")
+async def prgm_list():
+    """List available Casio BASIC programs stored on the server."""
+    if not os.path.isdir(_PROGRAMS_DIR):
+        return {"programs": []}
+    names = sorted(
+        fn[:-4] for fn in os.listdir(_PROGRAMS_DIR) if fn.endswith(".cas")
+    )
+    return {"programs": names}
+
+
+@app.get("/api/prgm/{name}")
+async def prgm_get(name: str):
+    """Return the source code of a named program."""
+    path = os.path.join(_PROGRAMS_DIR, name + ".cas")
+    if not os.path.isfile(path):
+        return {"error": "Program not found"}
+    with open(path, encoding="utf-8") as f:
+        return {"name": name, "source": f.read()}
+
+
+@app.post("/api/prgm/save")
+async def prgm_save(body: dict):
+    """Save (create or overwrite) a named program.
+    Body: {"name": "MYPROG", "source": "...casio basic..."}
+    """
+    name   = body.get("name", "").strip()
+    source = body.get("source", "")
+    if not name:
+        return {"error": "Name required"}
+    os.makedirs(_PROGRAMS_DIR, exist_ok=True)
+    path = os.path.join(_PROGRAMS_DIR, name + ".cas")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(source)
+    return {"status": "ok", "name": name}
+
+
+@app.delete("/api/prgm/{name}")
+async def prgm_delete(name: str):
+    """Delete a named program."""
+    path = os.path.join(_PROGRAMS_DIR, name + ".cas")
+    if os.path.isfile(path):
+        os.remove(path)
+        return {"status": "ok"}
+    return {"error": "Not found"}
+
+
+@app.post("/api/prgm/run")
+async def prgm_run(body: dict):
+    """Run a Casio BASIC program and return all output events.
+
+    Body: {
+        "source": "...program text...",
+        "inputs": [3, 4, ...],   // pre-supplied Input values
+        "name":   "PROGNAME",    // alternative: load by name
+        "angle_mode": "DEG"
+    }
+    Returns: {
+        "events": [...],
+        "variables": {"A": 0, ...},
+        "error": null | "...",
+        "terminated": false
+    }
+    """
+    source = body.get("source", "")
+    if not source:
+        name = body.get("name", "")
+        path = os.path.join(_PROGRAMS_DIR, name + ".cas")
+        if name and os.path.isfile(path):
+            with open(path, encoding="utf-8") as f:
+                source = f.read()
+        else:
+            return {"error": "No source provided", "events": [], "variables": {}}
+
+    inputs     = body.get("inputs", [])
+    angle_mode = body.get("angle_mode", "DEG")
+
+    interp = CasioBasicInterpreter(angle_mode=angle_mode)
+
+    # Make server-stored programs available for Prog "name" calls
+    if os.path.isdir(_PROGRAMS_DIR):
+        for fn in os.listdir(_PROGRAMS_DIR):
+            if fn.endswith(".cas"):
+                prog_name = fn[:-4]
+                with open(os.path.join(_PROGRAMS_DIR, fn), encoding="utf-8") as f:
+                    interp.programs[prog_name] = f.read()
+
+    result = interp.run(source, inputs)
+    return {
+        "events":     result.events,
+        "variables":  result.variables,
+        "error":      result.error,
+        "terminated": result.terminated,
+    }
 
 
 # ── WebSocket — one session = one calculator instance ────────────────────────

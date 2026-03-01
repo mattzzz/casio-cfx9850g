@@ -1,0 +1,17 @@
+// bounce.cas — Bouncing dot simulation
+// X,Y = position; P,Q = velocity (dx,dy)
+ViewWindow -10,10,1,-10,10,1
+0->X
+0->Y
+1->P
+1->Q
+For I=1 To 30
+ClrGraph
+PlotOn X,Y
+X+P->X
+Y+Q->Y
+If X>9 Then -1*P->P
+If X<-9 Then -1*P->P
+If Y>9 Then -1*Q->Q
+If Y<-9 Then -1*Q->Q
+Next I

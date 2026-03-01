@@ -21,7 +21,7 @@ const Modes = (() => {
     EQUA:  ['POLY', 'SIML', ';', '', '', ''],
     MAT:   ['A', 'B', 'C', 'D', 'E', 'F'],
     BASE:  ['DEC', 'HEX', 'BIN', 'OCT', '', ''],
-    PRGM:  ['', 'EDIT', 'NEW', '', '', ''],
+    PRGM:  ['RUN', 'EDIT', 'NEW', 'LOAD', '', 'LIST'],
     DYNA:  ['', '', '', '', '', ''],
     RECR:  ['', '', '', '', '', ''],
   };

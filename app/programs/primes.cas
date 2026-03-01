@@ -1,0 +1,10 @@
+// primes.cas — Print primes up to 50
+2->N
+While N<=50
+1->P
+For A=2 To Int(sqrt(N))
+If N-Int(N/A)*A=0 Then 0->P
+Next A
+If P=1 Then Print N
+N+1->N
+WhileEnd

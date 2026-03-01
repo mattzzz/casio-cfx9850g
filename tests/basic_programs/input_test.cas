@@ -1,0 +1,9 @@
+// input_test.cas — Read two numbers and display their sum, difference, product
+Input "A=",A
+Input "B=",B
+A+B->C
+Print C
+A-B->C
+Print C
+A*B->C
+Print C
