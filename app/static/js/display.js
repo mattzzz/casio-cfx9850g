@@ -314,6 +314,57 @@ const LCD = (() => {
     return lines;
   }
 
+  // ── public: render an external 128×64 pixel buffer ────────────────────────
+  // extBuf: Array or Uint8Array of 8192 values (0=off, 1=on)
+  // After loading the pixels, the softkey bar is redrawn on top so the
+  // user can still read the F-key labels while viewing a graph.
+  function renderPixelMap(extBuf) {
+    const len = Math.min(extBuf.length, W * H);
+    for (let i = 0; i < len; i++) buf[i] = extBuf[i] ? 1 : 0;
+    // Redraw softkeys so they stay readable over graph area
+    _drawSoftkeyBar(_softkeys);
+    flush();
+  }
+
+  // ── public: render a value table as dot-matrix text ───────────────────────
+  // rows: [{x: "...", y: "..."|undefined}, ...]
+  // scrollOffset: first row index to display
+  // Displays a header + up to 5 data rows using the dot-matrix font.
+  function renderTableView(rows, scrollOffset, mode, angle) {
+    buf.fill(0);
+
+    // Status bar
+    const statusLine = (mode || 'TABLE').padEnd(6) + (angle || 'DEG');
+    drawText(statusLine, 0, 0);
+
+    // Column header (abbreviated to fit 21 chars)
+    drawText('  X        F(X)     ', 0, 9);
+
+    // Divider line
+    for (let x = 0; x < W; x++) setPixel(x, 16, 1);
+
+    // Data rows — 5 visible at a time
+    const vis = rows.slice(scrollOffset, scrollOffset + 5);
+    for (let i = 0; i < vis.length; i++) {
+      const r = vis[i];
+      const xStr = String(r.x).slice(0, 9).padStart(9);
+      const yStr = (r.y === undefined || r.y === null ? '---' : String(r.y))
+        .slice(0, 10).padStart(10);
+      drawText(xStr + ' ' + yStr, 0, 18 + i * 8);
+    }
+
+    // Scroll indicator (right edge, single pixel marker)
+    if (rows.length > 5) {
+      const maxOff = rows.length - 5;
+      const barY = 18 + Math.round((scrollOffset / maxOff) * 38);
+      setPixel(127, barY, 1);
+      setPixel(127, barY + 1, 1);
+    }
+
+    _drawSoftkeyBar(_softkeys);
+    flush();
+  }
+
   // ── public: clear ─────────────────────────────────────────────────────────
   function clear() {
     buf.fill(0);
@@ -331,5 +382,7 @@ const LCD = (() => {
              expression: '', result: '', error: '' });
   }
 
-  return { init, render, clear, renderMenu, setSoftkeys, drawText, drawRect, flush };
+  return { init, render, clear, renderMenu, setSoftkeys,
+           renderPixelMap, renderTableView,
+           drawText, drawRect, flush };
 })();

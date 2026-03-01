@@ -129,6 +129,64 @@ class GraphMode:
         except Exception:
             return None
 
+    def plot_pixels(self) -> list[int]:
+        """Render all non-empty Y= functions as a 128×64 binary pixel map.
+
+        Returns a flat list of 8192 ints (1 = pixel on, 0 = off), suitable
+        for loading directly into the LCD canvas renderer.
+        """
+        w = self.window
+        xmin, xmax = w["xmin"], w["xmax"]
+        ymin, ymax = w["ymin"], w["ymax"]
+
+        # Render at exactly 128×64 pixels: figsize_inches × dpi = pixels
+        DPI = 72
+        fig, ax = plt.subplots(figsize=(128 / DPI, 64 / DPI), dpi=DPI)
+        fig.patch.set_facecolor("#a8b84b")
+        ax.set_facecolor("#a8b84b")
+
+        ax.spines["right"].set_visible(False)
+        ax.spines["top"].set_visible(False)
+        ax.spines["left"].set_color("#1c2314")
+        ax.spines["bottom"].set_color("#1c2314")
+        ax.set_xlim(xmin, xmax)
+        ax.set_ylim(ymin, ymax)
+        ax.tick_params(colors="#1c2314", labelsize=3.5)
+        ax.axhline(0, color="#1c2314", linewidth=0.5, zorder=1)
+        ax.axvline(0, color="#1c2314", linewidth=0.5, zorder=1)
+
+        x_vals = np.linspace(xmin, xmax, 300)
+        for i, expr_str in enumerate(self.functions):
+            if not expr_str:
+                continue
+            y_vals = self._eval_function(expr_str, x_vals)
+            if y_vals is not None:
+                y_masked = np.where(np.abs(y_vals) > 1e6, np.nan, y_vals)
+                ax.plot(x_vals, y_masked,
+                        color=PLOT_COLORS[i], linewidth=0.8, zorder=2)
+
+        plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
+
+        fig.canvas.draw()
+        raw = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8).copy()
+        actual_w, actual_h = fig.canvas.get_width_height()
+        img = raw.reshape(actual_h, actual_w, 4)
+        plt.close(fig)
+
+        # Nearest-neighbour resample to exactly 128×64 if needed
+        if actual_w != 128 or actual_h != 64:
+            yi = (np.arange(64) * actual_h // 64).clip(0, actual_h - 1)
+            xi = (np.arange(128) * actual_w // 128).clip(0, actual_w - 1)
+            img = img[np.ix_(yi, xi)]
+
+        # Threshold: background is #a8b84b = (168, 184, 75)
+        # Any pixel whose L1 distance from background > 40 is "on"
+        r = img[:, :, 0].astype(int)
+        g = img[:, :, 1].astype(int)
+        b = img[:, :, 2].astype(int)
+        diff = np.abs(r - 168) + np.abs(g - 184) + np.abs(b - 75)
+        return (diff > 40).astype(int).flatten().tolist()
+
     # ── zoom helpers ──────────────────────────────────────────────────────────
 
     def zoom_in(self, factor: float = 0.5) -> None:
