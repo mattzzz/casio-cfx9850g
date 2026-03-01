@@ -1,0 +1,14 @@
+/* ── Casio CFX-9850G LCD Screen ────────────────────────────────────────────
+   The physical LCD is 128×64 pixels; we render at 3× = 384×192px.
+   Color zones (from spec):
+     Orange header bar  — mode indicator row
+     Blue main area     — expression + result
+     Green graph area   — graph plots (Phase 3)
+   ──────────────────────────────────────────────────────────────────────── */
+
+/* LCD background: characteristic yellow-green */
+canvas#lcd {
+  background: #a8b84b;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}

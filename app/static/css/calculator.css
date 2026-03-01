@@ -1,0 +1,220 @@
+/* ── Casio CFX-9850G ────────────────────────────────────────────────────────
+   Layout system:
+     Body inner width:  412px  (440px body − 2×14px padding)
+     6-key rows:        5 gaps × 5px = 25px  →  key = 64.5px ≈ 65px
+     5-key rows:        4 gaps × 5px = 20px  →  key = 78.4px ≈ 78px
+     Upper grid (4+dpad): grid-template-columns: repeat(4,1fr) 2fr
+       → 4 gaps × 5px = 20px, 392px / 6fr = 65.3px per 1fr  ≈ same as 6-key rows ✓
+   ───────────────────────────────────────────────────────────────────────── */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: #111;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  min-height: 100vh;
+  padding: 24px 8px;
+  font-family: "Arial Narrow", Arial, sans-serif;
+}
+
+/* ── Calc body ────────────────────────────────────────────────────────────── */
+#calc-body {
+  background: #282830;
+  border-radius: 14px 14px 22px 22px;
+  padding: 10px 14px 22px;
+  width: 440px;
+  box-shadow:
+    0 0 0 2px #1a1a20,
+    0 12px 52px rgba(0,0,0,0.96),
+    inset 0 1px 0 rgba(255,255,255,0.05);
+}
+
+/* ── Brand ────────────────────────────────────────────────────────────────── */
+#brand-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2px 2px 6px;
+}
+#brand-casio { font-size: 17px; font-weight: 900; color: #bbb; letter-spacing: 3px; }
+#brand-model { font-size: 8px; color: #666; letter-spacing: 1px; }
+
+/* ── Screen ───────────────────────────────────────────────────────────────── */
+#screen-bezel {
+  background: #0e0e0e;
+  border-radius: 5px;
+  padding: 6px;          /* 412px inner − 12px bezel = 400px; canvas 384px fits ✓ */
+  margin-bottom: 5px;
+  box-shadow: inset 0 2px 8px rgba(0,0,0,0.95), 0 0 0 1px #333;
+  display: flex;
+  justify-content: center;
+}
+#lcd { display: block; border-radius: 2px; image-rendering: pixelated; }
+
+/* ── Sub-brand ────────────────────────────────────────────────────────────── */
+#brand-sub {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 3px 2px 8px;
+}
+#brand-color { font-size: 7.5px; color: #cc4400; font-weight: bold; letter-spacing: 1.5px; }
+#brand-cfx   { font-size: 8px; color: #999; letter-spacing: 1px; }
+
+/* ── Keyboard container ───────────────────────────────────────────────────── */
+#keyboard { display: flex; flex-direction: column; gap: 5px; }
+
+/* ── Generic key row (flex, equal-width children) ────────────────────────── */
+.krow { display: flex; gap: 5px; }
+.krow > .key { flex: 1; }
+
+/* ── F-key label row ──────────────────────────────────────────────────────── */
+#fkey-labels {
+  display: flex;
+  gap: 5px;
+  padding: 0 0 1px;
+}
+#fkey-labels > span {
+  flex: 1;
+  text-align: center;
+  font-size: 6px;
+  color: #777;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* ── Upper grid: 2 rows × (4 equal cols + 1 dpad col) ────────────────────── */
+#upper-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr) 2fr;
+  grid-template-rows: 36px 36px;
+  gap: 5px;
+}
+/* Keys auto-place into columns 1-4, rows 1-2 */
+#upper-grid > .key { width: 100%; height: 100%; }
+
+/* D-pad: column 5, spans both rows */
+#dpad {
+  grid-column: 5;
+  grid-row: 1 / 3;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  gap: 3px;
+}
+#dpad > div { /* empty corner cells */ }
+
+/* ── Base key styles ──────────────────────────────────────────────────────── */
+.key {
+  position: relative;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 3px 4px;
+  height: 36px;
+  overflow: hidden;
+  user-select: none;
+  transition: filter 0.06s, transform 0.06s;
+  box-shadow: 0 3px 0 rgba(0,0,0,0.65), inset 0 1px 0 rgba(255,255,255,0.07);
+}
+.key:active, .key.pressed {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 rgba(0,0,0,0.5);
+  filter: brightness(0.78);
+}
+
+/* ── Label types ──────────────────────────────────────────────────────────── */
+/* Yellow SHIFT label — top-left */
+.ylbl {
+  position: absolute;
+  top: 2px; left: 3px;
+  font-size: 7px; font-weight: 600;
+  color: #ffd000;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+}
+/* Red ALPHA letter — top-right */
+.rlbl {
+  position: absolute;
+  top: 2px; right: 3px;
+  font-size: 6.5px; font-weight: normal;
+  color: #ff7070;
+  line-height: 1;
+  pointer-events: none;
+}
+/* Standard key label (bottom-centre) */
+.slbl {
+  font-size: 10px; font-weight: bold; color: #ddd; line-height: 1;
+}
+/* Number key label (larger) */
+.nlbl {
+  font-size: 15px; font-weight: bold; color: #fff; line-height: 1;
+}
+
+/* ── Key colour variants ─────────────────────────────────────────────────── */
+.kdark { background: #38384a; }
+.kfunc { background: #18285e; }   /* math function keys: dark blue */
+
+/* F-keys — short, green-ish */
+.kf {
+  background: #2a3830;
+  height: 26px;
+  padding: 0 3px 3px;
+}
+.kf .slbl { font-size: 9px; color: #b8e8b8; }
+
+/* Number/operator keys — taller, lighter */
+.knum {
+  background: #404050;
+  height: 44px;
+  padding: 0 3px 5px;
+}
+
+/* AC/ON — red text */
+.kac .kac-lbl { color: #ff5555; font-size: 10px; }
+
+/* SHIFT — gold */
+#key-SHIFT {
+  background: #a08000;
+}
+#key-SHIFT .slbl { color: #111; font-size: 11px; font-weight: 900; }
+#key-SHIFT.active { background: #d4a800; box-shadow: 0 0 10px #d4a80055; }
+
+/* ALPHA — dark red */
+#key-ALPHA {
+  background: #7a0000;
+}
+#key-ALPHA .slbl { font-size: 11px; font-weight: 900; }
+#key-ALPHA.active { background: #bb1111; box-shadow: 0 0 10px #bb111155; }
+
+/* EXE — blue, same flex:1 width as other bottom-row keys */
+.kexe {
+  background: #1155aa;
+  height: 44px;
+  padding: 0 3px 5px;
+}
+.kexe .nlbl { color: #fff; }
+
+/* Nav / d-pad buttons */
+.knav {
+  background: #2a2a3c;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  width: 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 9px; color: #aaa;
+  box-shadow: 0 2px 0 rgba(0,0,0,0.6);
+  transition: filter 0.06s, transform 0.06s;
+}
+.knav:active { transform: scale(0.9); filter: brightness(0.8); }
+
+/* ── Active modifier highlights ──────────────────────────────────────────── */
+body.shift-active .ylbl { color: #ffe040; }
+body.alpha-active .rlbl { color: #ffaaaa; }
