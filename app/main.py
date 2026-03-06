@@ -15,6 +15,9 @@ from app.calculator.modes.equation import EquationMode
 from app.calculator.modes.base_n import BaseNMode
 from app.calculator.modes.conics import ConicsMode
 from app.calculator.modes.program import CasioBasicInterpreter
+from app.calculator.cat_parser import (
+    is_cat_file, parse_cat_file, parse_cat_programs, parse_cat_matrices, find_entry_point,
+)
 
 app = FastAPI(title="Casio CFX-9850G Emulator", version="1.0.0")
 
@@ -317,38 +320,137 @@ async def conics_plot(body: dict):
 _PROGRAMS_DIR = os.path.join(os.path.dirname(__file__), "programs")
 
 
+def _find_program_path(name: str) -> str | None:
+    """Return the filesystem path for a program, checking .cas then .cat."""
+    for ext in (".cas", ".cat"):
+        path = os.path.join(_PROGRAMS_DIR, name + ext)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def _load_program_source(path: str) -> str:
+    """Read a program file and return its plain-text CAS source.
+
+    CAT files are transparently converted before returning (first record).
+    """
+    with open(path, encoding="utf-8") as f:
+        content = f.read()
+    if path.endswith(".cat") or is_cat_file(content):
+        _, source = parse_cat_file(content)
+        return source
+    return content
+
+
+def _find_program_in_cats(name: str) -> str | None:
+    """Search all .cat files in the programs dir for a program by name.
+
+    Returns the converted CAS source if found, else None.
+    """
+    result = _find_cat_for_program(name)
+    return result[1] if result else None
+
+
+def _find_cat_for_program(name: str) -> tuple[str, str] | None:
+    """Search all .cat files for a program named *name*.
+
+    Returns (cat_content, program_source) so callers can also load
+    sub-programs and matrices from the same CAT file.
+    """
+    if not os.path.isdir(_PROGRAMS_DIR):
+        return None
+    for fn in os.listdir(_PROGRAMS_DIR):
+        if not fn.endswith(".cat"):
+            continue
+        path = os.path.join(_PROGRAMS_DIR, fn)
+        with open(path, encoding="utf-8") as f:
+            cat_content = f.read()
+        for pname, src in parse_cat_programs(cat_content):
+            if pname == name:
+                return cat_content, src
+    return None
+
+
 @app.get("/api/prgm/list")
 async def prgm_list():
-    """List available Casio BASIC programs stored on the server."""
+    """List available Casio BASIC programs stored on the server.
+
+    Multi-record .cat files contribute ONE entry — the entry-point program
+    (the program not called by any other program in the file).  Any .cas
+    files that are sub-programs of a stored .cat file are suppressed so
+    they do not appear as separate list entries.
+    """
     if not os.path.isdir(_PROGRAMS_DIR):
         return {"programs": []}
-    names = sorted(
-        fn[:-4] for fn in os.listdir(_PROGRAMS_DIR) if fn.endswith(".cas")
-    )
-    return {"programs": names}
+
+    names: set[str] = set()
+    cat_subprograms: set[str] = set()  # all names from .cat files (including non-entry)
+
+    for fn in sorted(os.listdir(_PROGRAMS_DIR)):
+        if fn.endswith(".cat"):
+            path = os.path.join(_PROGRAMS_DIR, fn)
+            with open(path, encoding="utf-8") as f:
+                cat_content = f.read()
+            programs = parse_cat_programs(cat_content)
+            if programs:
+                names.add(find_entry_point(programs))
+                for pname, _ in programs:
+                    cat_subprograms.add(pname)
+
+    for fn in sorted(os.listdir(_PROGRAMS_DIR)):
+        if fn.endswith(".cas"):
+            prog_name = fn[:-4]
+            if prog_name not in cat_subprograms:
+                names.add(prog_name)
+
+    return {"programs": sorted(names)}
 
 
 @app.get("/api/prgm/{name}")
 async def prgm_get(name: str):
     """Return the source code of a named program."""
-    path = os.path.join(_PROGRAMS_DIR, name + ".cas")
-    if not os.path.isfile(path):
-        return {"error": "Program not found"}
-    with open(path, encoding="utf-8") as f:
-        return {"name": name, "source": f.read()}
+    path = _find_program_path(name)
+    if path:
+        return {"name": name, "source": _load_program_source(path)}
+    # Not a standalone file — search inside multi-record .cat files
+    src = _find_program_in_cats(name)
+    if src is not None:
+        return {"name": name, "source": src}
+    return {"error": "Program not found"}
 
 
 @app.post("/api/prgm/save")
 async def prgm_save(body: dict):
     """Save (create or overwrite) a named program.
-    Body: {"name": "MYPROG", "source": "...casio basic..."}
+
+    Body: {"name": "MYPROG", "source": "...casio basic...", "ext": ".cas"}
+
+    If *source* is a multi-record CAT file all contained programs are
+    extracted and saved individually as .cas files.  The primary program
+    name (first record) is returned.
     """
     name   = body.get("name", "").strip()
     source = body.get("source", "")
+    ext    = body.get("ext", ".cas")
+    if ext not in (".cas", ".cat"):
+        ext = ".cas"
     if not name:
         return {"error": "Name required"}
     os.makedirs(_PROGRAMS_DIR, exist_ok=True)
-    path = os.path.join(_PROGRAMS_DIR, name + ".cas")
+
+    # Multi-record CAT file: extract all programs and save each individually
+    if ext == ".cat" and is_cat_file(source):
+        programs = parse_cat_programs(source)
+        if programs:
+            entry_name = find_entry_point(programs)
+            for prog_name, prog_source in programs:
+                path = os.path.join(_PROGRAMS_DIR, prog_name + ".cas")
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(prog_source)
+            return {"status": "ok", "name": entry_name, "count": len(programs)}
+        # Fallthrough: empty CAT — save raw
+
+    path = os.path.join(_PROGRAMS_DIR, name + ext)
     with open(path, "w", encoding="utf-8") as f:
         f.write(source)
     return {"status": "ok", "name": name}
@@ -357,8 +459,8 @@ async def prgm_save(body: dict):
 @app.delete("/api/prgm/{name}")
 async def prgm_delete(name: str):
     """Delete a named program."""
-    path = os.path.join(_PROGRAMS_DIR, name + ".cas")
-    if os.path.isfile(path):
+    path = _find_program_path(name)
+    if path and os.path.isfile(path):
         os.remove(path)
         return {"status": "ok"}
     return {"error": "Not found"}
@@ -370,46 +472,106 @@ async def prgm_run(body: dict):
 
     Body: {
         "source": "...program text...",
-        "inputs": [3, 4, ...],   // pre-supplied Input values
-        "name":   "PROGNAME",    // alternative: load by name
-        "angle_mode": "DEG"
+        "inputs": [3, 4, ...],      // pre-supplied Input values
+        "name":   "PROGNAME",       // alternative: load by name
+        "angle_mode": "DEG",
+        "getkey": 0,                // Casio key code active this frame
+        "start_label": "A",         // start execution from this Lbl (game loop)
+        "state": {                  // restore state for game frames
+            "variables": {"A": 0, ...},
+            "matrices":  {"A": [[...]]}
+        }
     }
     Returns: {
         "events": [...],
         "variables": {"A": 0, ...},
+        "matrices": {"A": [[...]]},
+        "executing_prog": "TETMAIN",  // program name when MAX_ITERATIONS hit
         "error": null | "...",
         "terminated": false
     }
     """
     source = body.get("source", "")
+    raw_cat_source: str | None = None   # remember original CAT if passed directly
+
     if not source:
         name = body.get("name", "")
-        path = os.path.join(_PROGRAMS_DIR, name + ".cas")
-        if name and os.path.isfile(path):
-            with open(path, encoding="utf-8") as f:
-                source = f.read()
+        path = _find_program_path(name) if name else None
+        if path:
+            source = _load_program_source(path)
+            if path.endswith(".cat"):
+                with open(path, encoding="utf-8") as _f:
+                    raw_cat_source = _f.read()
         else:
-            return {"error": "No source provided", "events": [], "variables": {}}
+            # Program might live inside a multi-record CAT file (e.g. P1 in doom.cat)
+            cat_result = _find_cat_for_program(name) if name else None
+            if cat_result:
+                raw_cat_source, source = cat_result
+            else:
+                return {"error": "No source provided", "events": [], "variables": {}}
+    elif is_cat_file(source):
+        # Raw CAT source passed directly (e.g. from frontend file load)
+        raw_cat_source = source
+        programs = parse_cat_programs(source)
+        if programs:
+            entry = find_entry_point(programs)
+            source = next((s for n, s in programs if n == entry), programs[0][1])
+        else:
+            source = ""
 
-    inputs     = body.get("inputs", [])
-    angle_mode = body.get("angle_mode", "DEG")
+    inputs      = body.get("inputs", [])
+    angle_mode  = body.get("angle_mode", "DEG")
+    getkey      = int(body.get("getkey", 0))
+    start_label = body.get("start_label") or None
+    state       = body.get("state") or {}
+    state_vars  = state.get("variables", {}) if state else {}
+    state_mats  = state.get("matrices", {}) if state else {}
 
     interp = CasioBasicInterpreter(angle_mode=angle_mode)
 
-    # Make server-stored programs available for Prog "name" calls
+    # Load matrices from the directly-provided CAT (e.g. tetris.cat Mat A record)
+    if raw_cat_source:
+        for mat_letter, mat_data in parse_cat_matrices(raw_cat_source):
+            interp.matrices[mat_letter] = mat_data
+        # Also load ALL programs from the same CAT as sub-programs
+        for pname, psrc in parse_cat_programs(raw_cat_source):
+            interp.programs[pname] = psrc
+
+    # Make server-stored programs available for Prog "name" calls.
+    # Multi-record .cat files expose ALL their programs, not just the first.
     if os.path.isdir(_PROGRAMS_DIR):
         for fn in os.listdir(_PROGRAMS_DIR):
-            if fn.endswith(".cas"):
+            prog_path = os.path.join(_PROGRAMS_DIR, fn)
+            if fn.endswith(".cat"):
+                with open(prog_path, encoding="utf-8") as f:
+                    cat_content = f.read()
+                for pname, psrc in parse_cat_programs(cat_content):
+                    interp.programs[pname] = psrc
+                for mat_letter, mat_data in parse_cat_matrices(cat_content):
+                    if mat_letter not in interp.matrices:
+                        interp.matrices[mat_letter] = mat_data
+            elif fn.endswith(".cas"):
                 prog_name = fn[:-4]
-                with open(os.path.join(_PROGRAMS_DIR, fn), encoding="utf-8") as f:
-                    interp.programs[prog_name] = f.read()
+                # Don't overwrite programs already loaded from a .cat file
+                if prog_name not in interp.programs:
+                    interp.programs[prog_name] = _load_program_source(prog_path)
 
-    result = interp.run(source, inputs)
+    prog_name = body.get("name", "main") or "main"
+    result = interp.run(
+        source, inputs,
+        key=getkey,
+        start_label=start_label,
+        state_variables=state_vars,
+        state_matrices=state_mats,
+        prog_name=prog_name,
+    )
     return {
-        "events":     result.events,
-        "variables":  result.variables,
-        "error":      result.error,
-        "terminated": result.terminated,
+        "events":         result.events,
+        "variables":      result.variables,
+        "matrices":       result.matrices,
+        "executing_prog": result.executing_prog,
+        "error":          result.error,
+        "terminated":     result.terminated,
     }
 
 

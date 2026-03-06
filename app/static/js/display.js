@@ -365,6 +365,31 @@ const LCD = (() => {
     flush();
   }
 
+  // ── public: render Locate-command grid from a running program ─────────────
+  // locateBuf: { rowStr: { colStr: text } }  (1-indexed, as from applyPrgmEvents)
+  // Row 1..8 → pixels 8..57 (7px per row, tightly packed to fit 8 rows)
+  // Col 1..21 → pixels 0..120 (6px per col, 5px char + 1px gap)
+  function renderLocateGrid(locateBuf, mode, angle) {
+    buf.fill(0);
+    // Status bar
+    const statusLine = (mode || 'PRGM').padEnd(6) + (angle || 'DEG');
+    drawText(statusLine, 0, 0);
+    // Located text
+    for (const [rowKey, cols] of Object.entries(locateBuf)) {
+      const r = parseInt(rowKey);
+      if (r < 1 || r > 8) continue;
+      const pixelY = 8 + (r - 1) * 7;
+      for (const [colKey, text] of Object.entries(cols)) {
+        const c = parseInt(colKey);
+        if (c < 1 || c > 21) continue;
+        const pixelX = (c - 1) * 6;
+        drawText(String(text), pixelX, pixelY);
+      }
+    }
+    _drawSoftkeyBar(_softkeys);
+    flush();
+  }
+
   // ── public: clear ─────────────────────────────────────────────────────────
   function clear() {
     buf.fill(0);
@@ -383,6 +408,6 @@ const LCD = (() => {
   }
 
   return { init, render, clear, renderMenu, setSoftkeys,
-           renderPixelMap, renderTableView,
+           renderPixelMap, renderTableView, renderLocateGrid,
            drawText, drawRect, flush };
 })();

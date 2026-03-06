@@ -28,8 +28,47 @@
   let prgmSource     = '';        // source of current program
   let prgmTextLines  = [];        // accumulated text-output lines
   let prgmLocateBuf  = {};        // {y: {x: text}} for Locate rendering
+  let prgmPixelBuf   = null;      // Uint8Array(128×64) for PlotOn/F-Line output
   let prgmPaused     = false;
   let prgmEditBuf    = '';        // new-program source buffer
+
+  // ── PRGM game-loop state ─────────────────────────────────────────────────
+  let prgmIsGame     = false;     // true when running an interactive game
+  let prgmGameProg   = '';        // program name to run for each game frame
+  let prgmStartLabel = null;      // Lbl to jump to for subsequent frames
+  let prgmGameVars   = {};        // variable state persisted between frames
+  let prgmGameMats   = {};        // matrix state persisted between frames
+  let prgmCurrentKey = 0;         // Casio key code currently pressed
+  let prgmGameLoop   = null;      // setInterval handle
+  let _keyHoldTimer  = null;      // timeout to clear prgmCurrentKey
+
+  // Casio CFX-9850G key codes
+  const CASIO_KEY = { UP: 28, DOWN: 37, LEFT: 38, RIGHT: 27, EXE: 31 };
+
+  // Browser arrow key → Casio key code
+  const BROWSER_TO_CASIO = {
+    ArrowUp: 28, ArrowDown: 37, ArrowLeft: 38, ArrowRight: 27, Enter: 31,
+  };
+
+  // Handle keyboard events for game play
+  document.addEventListener('keydown', (e) => {
+    if (!prgmIsGame) return;
+    const code = BROWSER_TO_CASIO[e.key];
+    if (code !== undefined) {
+      prgmCurrentKey = code;
+      if (_keyHoldTimer) clearTimeout(_keyHoldTimer);
+      e.preventDefault();
+    }
+  });
+  document.addEventListener('keyup', (e) => {
+    if (!prgmIsGame) return;
+    const code = BROWSER_TO_CASIO[e.key];
+    if (code !== undefined && prgmCurrentKey === code) {
+      prgmCurrentKey = 0;
+      if (_keyHoldTimer) { clearTimeout(_keyHoldTimer); _keyHoldTimer = null; }
+      e.preventDefault();
+    }
+  });
 
   // ── GRAPH sub-state ──────────────────────────────────────────────────────
   let graphSub       = 'IDLE';
@@ -171,8 +210,9 @@
       showBase();
 
     } else if (mode === 'PRGM') {
+      stopGameLoop();
       prgmPhase = 'LIST'; prgmTextLines = []; prgmLocateBuf = {};
-      prgmPaused = false; prgmName = ''; prgmSource = '';
+      prgmPixelBuf = null; prgmPaused = false; prgmName = ''; prgmSource = '';
       loadPrgmList();
 
     } else {
@@ -726,6 +766,58 @@
 
   // ── PRGM mode ─────────────────────────────────────────────────────────────
 
+  /** Stop the game loop and reset game state. */
+  function stopGameLoop() {
+    if (prgmGameLoop) { clearInterval(prgmGameLoop); prgmGameLoop = null; }
+    if (_keyHoldTimer) { clearTimeout(_keyHoldTimer); _keyHoldTimer = null; }
+    prgmIsGame     = false;
+    prgmCurrentKey = 0;
+    prgmGameVars   = {};
+    prgmGameMats   = {};
+  }
+
+  /** Start the game loop at ~8fps (125ms per frame). */
+  function startGameLoop() {
+    if (prgmGameLoop) clearInterval(prgmGameLoop);
+    prgmGameLoop = setInterval(runGameFrame, 125);
+  }
+
+  /** Run one game frame: send current key, restore state, get next display. */
+  async function runGameFrame() {
+    try {
+      const resp = await fetch('/api/prgm/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name:        prgmGameProg,
+          start_label: prgmStartLabel,
+          getkey:      prgmCurrentKey,
+          state:       { variables: prgmGameVars, matrices: prgmGameMats },
+          angle_mode:  angleMode,
+        }),
+      });
+      const data = await resp.json();
+
+      // Update game state for next frame
+      if (data.variables) prgmGameVars = data.variables;
+      if (data.matrices)  prgmGameMats = data.matrices;
+
+      // Re-render display
+      prgmLocateBuf = {};
+      prgmPixelBuf  = null;
+      applyPrgmEvents(data.events || []);
+      showPrgmOutput();
+
+      // If game ended naturally (no termination), stop loop
+      if (!data.terminated && !data.error) {
+        stopGameLoop();
+        prgmPhase = 'RUN';
+      }
+    } catch {
+      // Network error — keep running, try next frame
+    }
+  }
+
   /** Fetch program list from server and show it. */
   async function loadPrgmList() {
     try {
@@ -762,7 +854,17 @@
 
   /** Render program output events on the LCD. */
   function showPrgmOutput() {
-    // Show last 6 text lines in the LCD
+    // Locate buffer takes priority (text-mode programs like Tetris)
+    if (Object.keys(prgmLocateBuf).length > 0) {
+      LCD.renderLocateGrid(prgmLocateBuf, 'PRGM', angleMode);
+      return;
+    }
+    // Pixel buffer (graph-mode programs like Doom)
+    if (prgmPixelBuf) {
+      LCD.renderPixelMap(prgmPixelBuf);
+      return;
+    }
+    // Otherwise show scrolling text lines (Print / ◢ output)
     const lines = prgmTextLines.slice(-6);
     while (lines.length < 4) lines.unshift('');
     const expr = lines.slice(0, 4).map(l => pad21(l)).join('');
@@ -787,8 +889,15 @@
         prgmTextLines = [];
         prgmLocateBuf = {};
       } else if (ev.type === 'clrgraph') {
-        // Graph cleared — clear pixel map on LCD
-        LCD.renderPixelMap(new Array(128 * 64).fill(0));
+        prgmPixelBuf = new Uint8Array(128 * 64);
+        LCD.renderPixelMap(prgmPixelBuf);
+      } else if (ev.type === 'plot') {
+        if (!prgmPixelBuf) prgmPixelBuf = new Uint8Array(128 * 64);
+        const col = ev.col, row = ev.row;
+        if (col >= 0 && col < 128 && row >= 0 && row < 64) {
+          if (ev.cmd === 'PLOTOFF') prgmPixelBuf[row * 128 + col] = 0;
+          else                      prgmPixelBuf[row * 128 + col] = 1;
+        }
       } else if (ev.type === 'pause') {
         prgmPaused = true;
       } else if (ev.type === 'pixels') {
@@ -805,7 +914,9 @@
     prgmPhase     = 'RUN';
     prgmTextLines = ['Running ' + prgmName + '...'];
     prgmLocateBuf = {};
+    prgmPixelBuf  = null;
     prgmPaused    = false;
+    stopGameLoop();
     showPrgmOutput();
 
     try {
@@ -817,10 +928,28 @@
       const data = await resp.json();
       prgmTextLines = [];
       applyPrgmEvents(data.events || []);
-      if (data.error) prgmTextLines.push('ERR: ' + data.error);
-      if (!data.error && !prgmPaused && prgmTextLines.length === 0)
-        prgmTextLines.push('Done.');
-      showPrgmOutput();
+
+      // 'Terminated' means max-iterations reached — not a real error
+      const realError = data.error && data.error !== 'Terminated' ? data.error : null;
+
+      // Detect game mode: program hit iteration limit AND produced visual output
+      const hasVisual = Object.keys(prgmLocateBuf).length > 0 || !!prgmPixelBuf;
+      if (data.terminated && hasVisual && !realError) {
+        // Start interactive game loop
+        prgmIsGame     = true;
+        prgmGameProg   = data.executing_prog || prgmName;
+        prgmStartLabel = 'A';   // most games loop at Lbl A
+        prgmGameVars   = data.variables || {};
+        prgmGameMats   = data.matrices  || {};
+        showPrgmOutput();
+        startGameLoop();
+      } else {
+        if (realError) prgmTextLines.push('ERR: ' + realError);
+        if (!realError && !prgmPaused && prgmTextLines.length === 0
+            && !hasVisual)
+          prgmTextLines.push('Done.');
+        showPrgmOutput();
+      }
     } catch {
       prgmTextLines = ['Network ERROR'];
       showPrgmOutput();
@@ -843,8 +972,10 @@
       const data = await resp.json();
       prgmTextLines = [];
       applyPrgmEvents(data.events || []);
-      if (data.error) prgmTextLines.push('ERR: ' + data.error);
-      if (!data.error && !prgmPaused && prgmTextLines.length === 0)
+      const realErr = data.error && data.error !== 'Terminated' ? data.error : null;
+      if (realErr) prgmTextLines.push('ERR: ' + realErr);
+      if (!realErr && !prgmPaused && prgmTextLines.length === 0
+          && Object.keys(prgmLocateBuf).length === 0 && !prgmPixelBuf)
         prgmTextLines.push('Done.');
       showPrgmOutput();
     } catch {
@@ -887,6 +1018,7 @@
   /** Key handler for PRGM mode. */
   async function handlePrgmKey(key) {
     if (key === 'EXIT') {
+      stopGameLoop();
       if (prgmPhase === 'LIST') { showMenu(); return; }
       prgmPhase = 'LIST'; showPrgmList(); return;
     }
@@ -937,7 +1069,24 @@
     }
 
     if (prgmPhase === 'RUN') {
-      if (key === 'EXE' || key === 'AC') {
+      if (key === 'EXIT' || key === 'AC') {
+        stopGameLoop();
+        prgmPaused = false;
+        prgmPhase  = 'LIST'; showPrgmList();
+        return;
+      }
+      if (prgmIsGame) {
+        // Map D-pad / EXE to Casio key codes; held briefly for one frame
+        const casioCodes = { UP: 28, DOWN: 37, LEFT: 38, RIGHT: 27, EXE: 31 };
+        const code = casioCodes[key];
+        if (code !== undefined) {
+          prgmCurrentKey = code;
+          if (_keyHoldTimer) clearTimeout(_keyHoldTimer);
+          _keyHoldTimer = setTimeout(() => { prgmCurrentKey = 0; _keyHoldTimer = null; }, 250);
+        }
+        return;
+      }
+      if (key === 'EXE') {
         prgmPaused = false;
         prgmPhase  = 'LIST'; showPrgmList();
       }
@@ -966,28 +1115,34 @@
       fi = document.createElement('input');
       fi.type = 'file';
       fi.id   = '_cas_file_input';
-      fi.accept = '.cas,.txt';
+      fi.accept = '.cas,.cat,.txt';
       fi.style.display = 'none';
       document.body.appendChild(fi);
       fi.addEventListener('change', async (e) => {
         const file = e.target.files[0];
         if (!file) return;
         const text = await file.text();
-        const name = file.name.replace(/\.(cas|txt)$/i, '');
-        // Save to server
+        const isCat = /\.cat$/i.test(file.name);
+        const name = file.name.replace(/\.(cas|cat|txt)$/i, '');
+        const ext  = isCat ? '.cat' : '.cas';
+        // Save to server (preserve extension so backend handles CAT conversion)
+        let savedName = name;
         try {
-          await fetch('/api/prgm/save', {
+          const resp = await fetch('/api/prgm/save', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, source: text }),
+            body: JSON.stringify({ name, source: text, ext }),
           });
+          const json = await resp.json();
+          // For multi-record CAT files the server returns the primary program name
+          if (json.name) savedName = json.name;
         } catch {}
         // Reload list
-        prgmName   = name;
+        prgmName   = savedName;
         prgmSource = text;
         await loadPrgmList();
         // Select the newly loaded program
-        const idx = prgmList.indexOf(name);
+        const idx = prgmList.indexOf(savedName);
         if (idx >= 0) prgmListIdx = idx;
         showPrgmList();
         fi.value = '';
